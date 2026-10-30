@@ -67,8 +67,9 @@
     });
   }
 
-  // Arrival day marker after the arrival time: "8:40 AM+2" -> 2, none -> 0.
-  const arrDayOf = li => +((li.innerText.match(/–\s*\d{1,2}:\d\d[^\n+-]*([+-]\d+)?/) || [])[1] || 0);
+  // Arrival day marker after the arrival time: "8:40 AM+2" -> 2, none -> 0. One digit only:
+  // some renderings run text together ("11:00 PM+111:00 PM on Sun").
+  const arrDayOf = li => +((li.innerText.match(/–\s*\d{1,2}:\d\d[^\n+-]*([+-]\d)?/) || [])[1] || 0);
   const rows = doc => [...doc.querySelectorAll('ul > li')].filter(li => /\d:\d\d/.test(li.innerText));
   const keep = (li, arrDay) => arrDay == null || arrDayOf(li) === arrDay;
 
