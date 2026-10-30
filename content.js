@@ -101,20 +101,27 @@
   };
   clearBtn.onclick = () => {
     sessionStorage.removeItem(KEY);
-    location.href = withLeg(location.href, kindSel.value, null);
+    location.href = withLeg(withLeg(location.href, 'dep', null), 'arr', null);
   };
   specIn.onkeydown = e => e.key === 'Enter' && applyBtn.click();
 
-  // Hide off search pages; keep this page's own rows filtered to the right arrival day
-  // (Google re-renders on "View more flights"); drop it all once the SPA moves on.
+  // Hide off search pages; keep this page's own rows filtered to the right arrival day and
+  // the merged rows in place (Google re-renders the list, e.g. as prices load); drop them
+  // once the SPA moves to another search.
+  let merged = [];
+  const fallback = el('ul');
   setInterval(() => {
     panel.hidden = !tfs();
     if (!st) return;
     const active = tfs() === st.tfs;
-    if (!active) document.querySelectorAll('.gf-merged').forEach(e => e.remove());
     for (const li of rows(document)) {
       if (!li.classList.contains('gf-merged')) li.style.display = !active || keep(li, st.arrDay) ? '' : 'none';
     }
+    if (!active) return merged.forEach(c => c.remove());
+    if (merged.every(c => c.isConnected)) return;
+    const list = rows(document).find(li => li.offsetHeight && !li.classList.contains('gf-merged'))?.parentElement ||
+      (fallback.isConnected ? fallback : (document.querySelector('[role=main]') || document.body).appendChild(fallback));
+    list.prepend(...merged);
   }, 1000);
 
   // --- merge extra searches ---
@@ -127,7 +134,8 @@
     await until(() => rows(d).length || /no (results|options)/i.test(d.body.innerText));
     const more = [...d.querySelectorAll('button')].find(b => /more flights/i.test(b.innerText));
     if (more) { more.click(); await sleep(2000); }
-    const found = rows(d).filter(li => keep(li, arrDay)).map(li => document.importNode(li, true));
+    // offsetHeight skips Google's hidden duplicate list.
+    const found = rows(d).filter(li => li.offsetHeight && keep(li, arrDay)).map(li => document.importNode(li, true));
     f.remove();
     return found;
   }
@@ -135,19 +143,14 @@
   async function merge({ extra }) {
     status.textContent = `Loading ${extra.length} more search(es)…`;
     const results = await Promise.all(extra.map(fetchRows));
-    const list = await until(() => rows(document)[0]?.parentElement, 10000) ||
-      (document.querySelector('[role=main]') || document.body).appendChild(el('ul'));
-    results.forEach((found, i) => {
-      const { url } = extra[i];
-      for (const c of found.reverse()) {
-        c.classList.add('gf-merged');
-        c.style.cssText = 'cursor:pointer;box-shadow:inset 4px 0 #1a73e8';
-        c.title = `From the ${legDate(url)} search — click to open it`;
-        c.onclick = () => { location.href = url; };
-        list.prepend(c);
-      }
-    });
-    status.textContent = `+${results.flat().length} flight(s) from other pieces (blue edge)`;
+    merged = results.flatMap((found, i) => found.map(c => {
+      c.classList.add('gf-merged');
+      c.style.cssText = 'cursor:pointer;box-shadow:inset 4px 0 #1a73e8';
+      c.title = `From the ${legDate(extra[i].url)} search — click to open it`;
+      c.onclick = () => { location.href = extra[i].url; };
+      return c;
+    }));
+    status.textContent = `+${merged.length} flight(s) from other pieces (blue edge)`;
   }
 
   if (st?.extra?.length && tfs() === st.tfs) merge(st);
