@@ -1,8 +1,7 @@
 # Google Flights Overnight Window
 
-A Chrome extension that lets Google Flights filter departure or arrival times
-across midnight ("leave 11 PM – 2 AM") and across several ranges at once
-("6-9, 18-22").
+A Chrome extension that lets Google Flights filter departure and arrival times
+across midnight ("leave Sat 11 PM – Sun 2 AM", "land Sun 11 PM – Mon 2 AM").
 
 ## Install
 
@@ -39,8 +38,9 @@ server showed these limits:
 - The arrival range is time-of-day only, so it matches +1 and +2 arrivals alike.
 
 So the extension splits each slider window into one piece per calendar day
-(departure pieces × arrival pieces). A departure piece after midnight searches the next date. An
-arrival piece keeps the date and filters rows by their `+N` arrival marker.
+and searches every departure piece × arrival piece. A departure piece after
+midnight searches the next date. An arrival piece keeps the date and filters
+rows by their `+N` arrival marker.
 The first piece becomes the page's own search. The others load in hidden
 same-origin iframes, and their rendered rows are cloned into the page.
 
@@ -56,5 +56,5 @@ but loses the single merged list, which was the point.
   gets one after you touch any filter or the date.
 - Scraping depends on Google's result markup (`ul > li` rows, times like
   `8:40 AM+2`). It will need touch-ups when Google changes the page.
-- Merged rows are snapshots. Sorting, filters and "View more flights" in the
-  main page don't apply to them.
+- Merged rows are snapshots, prepended to the list. Google's sorting and other
+  filters don't reorder or re-filter them.
