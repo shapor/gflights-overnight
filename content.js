@@ -3,14 +3,16 @@
 // range fields are last-wins. Arrival ranges are also time-of-day only, so
 // "arrive 1-3 AM" matches 1 AM on +1 and on +2 alike.
 //
-// So a window like "23-2 starting day +1" is split into non-wrapping pieces,
-// each pinned to an absolute day: departure pieces search that date;
-// arrival pieces search the page's date and keep only rows whose arrival
-// marker (+N) is that day. The first piece loads in this page, the rest in
-// hidden iframes whose rows are cloned into this page.
+// So this offers sliders over absolute time spanning several days, and splits
+// each window into one piece per calendar day: departure pieces search that
+// date; arrival pieces keep the date and keep only rows whose arrival marker
+// (+N) is that day. The first search loads in this page, the rest in hidden
+// iframes whose rows are cloned into this page.
 (() => {
-  const KEY = 'gf-ranges';
+  const KEY = 'gf-window';
   const FIELDS = { dep: [8, 9], arr: [10, 11] }; // first-leg [start, end] hour fields, end inclusive
+  const SPAN = { dep: 48, arr: 72 }; // slider length in hours from the search date's midnight
+  const ANY = { dep: [0, 24], arr: [0, 72] };
   const sleep = ms => new Promise(r => setTimeout(r, ms));
   const until = async (fn, ms = 20000) => {
     for (let t = 0; t < ms; t += 500) { const v = fn(); if (v) return v; await sleep(500); }
@@ -54,88 +56,153 @@
     return u.toString();
   }
 
-  // "23-2, 6-9" starting `day` days after the search date -> [{url, arrDay}], one per
-  // non-wrapping piece. End hour is exclusive; 0 = midnight. arrDay: required +N, or null.
-  function searches(url, kind, spec, day) {
-    return spec.split(',').flatMap(r => {
-      const [a, b0] = r.split('-').map(Number), b = b0 || 24;
-      if (!(a >= 0 && a < 24 && b > 0 && b <= 24 && a !== b)) throw new Error(`bad range "${r.trim()}"`);
-      const piece = (range, d) => kind === 'dep'
-        ? { url: withLeg(url, kind, range, d), arrDay: null }
-        : { url: withLeg(url, kind, range), arrDay: d };
-      return a < b ? [piece([a, b - 1], day)] : [piece([a, 23], day), piece([0, b - 1], day + 1)];
-    });
+  // Window [s, e) in hours from the search date's midnight -> one piece per calendar day,
+  // with range null where the whole day is covered.
+  function split([s, e]) {
+    const out = [];
+    for (let day = Math.floor(s / 24); day * 24 < e; day++) {
+      const a = Math.max(s - day * 24, 0), b = Math.min(e - day * 24, 24) - 1;
+      out.push({ day, range: a === 0 && b === 23 ? null : [a, b] });
+    }
+    return out;
+  }
+
+  // Every departure piece x arrival piece, grouped by URL. arrDays: allowed +N markers, or null.
+  function searches(base, dep, arr) {
+    const arrPieces = String(arr) === String(ANY.arr) ? [{ day: null, range: null }] : split(arr);
+    const byUrl = new Map();
+    for (const d of split(dep)) {
+      for (const a of arrPieces) {
+        const url = withLeg(withLeg(base, 'dep', d.range, d.day), 'arr', a.range);
+        const g = byUrl.get(url) || byUrl.set(url, { url, arrDays: a.day == null ? null : [] }).get(url);
+        g.arrDays?.push(a.day - d.day);
+      }
+    }
+    return [...byUrl.values()];
   }
 
   // Arrival day marker after the arrival time: "8:40 AM+2" -> 2, none -> 0. One digit only:
   // some renderings run text together ("11:00 PM+111:00 PM on Sun").
   const arrDayOf = li => +((li.innerText.match(/–\s*\d{1,2}:\d\d[^\n+-]*([+-]\d)?/) || [])[1] || 0);
   const rows = doc => [...doc.querySelectorAll('ul > li')].filter(li => /\d:\d\d/.test(li.innerText));
-  const keep = (li, arrDay) => arrDay == null || arrDayOf(li) === arrDay;
+  const shown = doc => rows(doc).filter(li => li.offsetHeight); // skips Google's hidden duplicate list
+  const keep = (li, arrDays) => !arrDays || arrDays.includes(arrDayOf(li));
+  const moreBtn = doc => [...doc.querySelectorAll('[jsaction]')]
+    .find(e => e.offsetHeight && /^\s*view more flights\s*$/i.test(e.textContent));
 
   // --- UI (built without innerHTML: Google enforces Trusted Types) ---
   const el = (tag, props = {}, ...kids) => { const e = Object.assign(document.createElement(tag), props); e.append(...kids); return e; };
-  const select = opts => el('select', {}, ...opts.map(([value, text]) => el('option', { value, text })));
   const st = JSON.parse(sessionStorage.getItem(KEY) || 'null');
-  const kindSel = select([['dep', 'Depart'], ['arr', 'Arrive']]);
-  const specIn = el('input', { size: 10, placeholder: '23-2, 6-9' });
-  const daySel = select([0, 1, 2, 3].map(d => [d, d ? `+${d} day` : 'search date']));
-  const applyBtn = el('button', { textContent: 'Apply' }), clearBtn = el('button', { textContent: 'Clear' });
-  const status = el('div');
-  const panel = el('div', {}, kindSel, ' ', specIn, ' starting ', daySel, ' ', applyBtn, ' ', clearBtn, status);
-  panel.style.cssText = 'position:fixed;right:16px;bottom:16px;z-index:9999;background:#fff;color:#202124;' +
-    'font:13px sans-serif;padding:10px 12px;border-radius:8px;box-shadow:0 2px 10px rgba(0,0,0,.25)';
-  kindSel.value = st?.kind ?? 'dep';
-  specIn.value = st?.spec ?? '23-2';
-  daySel.value = st?.day ?? 0;
-  document.body.append(panel);
+  const active = () => st && tfs() === st.tfs;
+  const base = () => active() ? st.base : location.href;
+  const win = { dep: st?.dep ?? ANY.dep, arr: st?.arr ?? ANY.arr };
 
-  applyBtn.onclick = () => {
-    try {
-      const [main, ...extra] = searches(location.href, kindSel.value, specIn.value, +daySel.value);
-      sessionStorage.setItem(KEY, JSON.stringify({
-        tfs: tfs(main.url), arrDay: main.arrDay, extra, kind: kindSel.value, spec: specIn.value, day: +daySel.value,
-      }));
-      location.href = main.url;
-    } catch (e) { status.textContent = e.message; }
+  const when = h => {
+    const d = new Date(legDate(base()) + 'T00:00Z');
+    d.setUTCHours(h);
+    return d.toLocaleString('en-US', { weekday: 'short', hour: 'numeric', timeZone: 'UTC' });
   };
-  clearBtn.onclick = () => {
+  const describe = kind => kind === 'arr' && String(win.arr) === String(ANY.arr)
+    ? 'Anytime' : `${when(win[kind][0])} – ${when(win[kind][1])}`;
+
+  // Two overlaid native range inputs make a dual-handle slider; ticks mark midnights.
+  // Native thumbs travel inside a 9px inset, so the drawn parts use the same inset.
+  const at = frac => `calc(9px + (100% - 18px) * ${frac})`;
+  let timer;
+  function slider(kind, title) {
+    const max = SPAN[kind], label = el('span', { className: 'gfw-val' });
+    const fill = el('div', { className: 'gfw-fill' });
+    const [lo, hi] = win[kind].map(value => el('input', { type: 'range', min: 0, max, step: 1, value }));
+    const ticks = Array.from({ length: max / 24 - 1 }, (_, i) => {
+      const t = el('div', { className: 'gfw-tick' });
+      t.style.left = at((i + 1) * 24 / max);
+      return t;
+    });
+    const days = Array.from({ length: max / 24 }, (_, i) => el('span', { textContent: when(i * 24).split(' ')[0] }));
+    const sync = () => {
+      win[kind] = [Math.min(+lo.value, +hi.value - 1), Math.max(+hi.value, +lo.value + 1)];
+      [lo.value, hi.value] = win[kind];
+      fill.style.left = at(win[kind][0] / max);
+      fill.style.width = `calc((100% - 18px) * ${(win[kind][1] - win[kind][0]) / max})`;
+      label.textContent = describe(kind);
+    };
+    // Apply shortly after release, so both handles can be set before the page reloads.
+    lo.oninput = hi.oninput = () => { clearTimeout(timer); sync(); };
+    lo.onchange = hi.onchange = () => { status.textContent = 'Updating…'; timer = setTimeout(apply, 1200); };
+    sync();
+    return el('div', { className: 'gfw-row' },
+      el('div', {}, `${title} · `, label),
+      el('div', { className: 'gfw-track' }, el('div', { className: 'gfw-rail' }), ...ticks, fill, lo, hi),
+      el('div', { className: 'gfw-days' }, ...days));
+  }
+
+  const css = `
+    .gfw{position:fixed;right:16px;bottom:16px;z-index:9999;width:340px;background:#fff;color:#3c4043;
+      font:13px "Google Sans",Roboto,Arial,sans-serif;padding:14px 16px;border-radius:8px;
+      box-shadow:0 1px 3px rgba(60,64,67,.3),0 4px 8px 3px rgba(60,64,67,.15)}
+    .gfw-head{display:flex;justify-content:space-between;font-size:15px;color:#202124;margin-bottom:6px}
+    .gfw-head a{font-size:13px;color:#1a73e8;cursor:pointer}
+    .gfw-row{margin-top:10px}.gfw-val{color:#1a73e8}
+    .gfw-track{position:relative;height:24px}
+    .gfw-rail,.gfw-fill,.gfw-tick{position:absolute;top:10px;height:4px;border-radius:2px}
+    .gfw-rail{left:9px;right:9px;background:#dadce0}.gfw-fill{background:#1a73e8}
+    .gfw-tick{width:2px;top:6px;height:12px;background:#9aa0a6}
+    .gfw input{position:absolute;inset:0;width:100%;margin:0;background:none;pointer-events:none;-webkit-appearance:none}
+    .gfw input::-webkit-slider-thumb{-webkit-appearance:none;pointer-events:auto;width:18px;height:18px;
+      border-radius:50%;background:#1a73e8;cursor:pointer}
+    .gfw-days{display:flex;padding:0 9px;color:#70757a;font-size:11px}.gfw-days span{flex:1}
+    .gfw-status{margin-top:8px;min-height:16px;color:#70757a;font-size:12px}`;
+  const status = el('div', { className: 'gfw-status' });
+  const reset = el('a', { textContent: 'Clear' });
+  const build = () => document.body.appendChild(el('div', { className: 'gfw' },
+    el('style', { textContent: css }),
+    el('div', { className: 'gfw-head' }, el('span', { textContent: 'Times across midnight' }), reset),
+    slider('dep', 'Departure'), slider('arr', 'Arrival'), status));
+
+  function apply() {
+    const [main, ...extra] = searches(base(), win.dep, win.arr);
+    sessionStorage.setItem(KEY, JSON.stringify({ base: base(), tfs: tfs(main.url), arrDays: main.arrDays, extra, ...win }));
+    location.href = main.url;
+  }
+  reset.onclick = () => {
+    const url = withLeg(withLeg(base(), 'dep', null), 'arr', null);
     sessionStorage.removeItem(KEY);
-    location.href = withLeg(withLeg(location.href, 'dep', null), 'arr', null);
+    location.href = url;
   };
-  specIn.onkeydown = e => e.key === 'Enter' && applyBtn.click();
 
-  // Hide off search pages; keep this page's own rows filtered to the right arrival day and
+  // Show the panel only on search pages, rebuilt when the date changes (day labels). On our
+  // search, expand Google's list once, keep its rows filtered to the right arrival day and
   // the merged rows in place (Google re-renders the list, e.g. as prices load); drop them
   // once the SPA moves to another search.
-  let merged = [];
+  let merged = [], expanded = false, panel, builtFor;
   const fallback = el('ul');
   setInterval(() => {
-    panel.hidden = !tfs();
+    const date = tfs() && legDate(base());
+    if (date !== builtFor) { panel?.remove(); panel = date && build(); builtFor = date; }
     if (!st) return;
-    const active = tfs() === st.tfs;
+    const on = active();
     for (const li of rows(document)) {
-      if (!li.classList.contains('gf-merged')) li.style.display = !active || keep(li, st.arrDay) ? '' : 'none';
+      if (!li.classList.contains('gf-merged')) li.style.display = !on || keep(li, st.arrDays) ? '' : 'none';
     }
-    if (!active) return merged.forEach(c => c.remove());
+    if (!on) return merged.forEach(c => c.remove());
+    if (!expanded) { const m = moreBtn(document); if (m) { m.click(); expanded = true; } }
     if (merged.every(c => c.isConnected)) return;
-    const list = rows(document).find(li => li.offsetHeight && !li.classList.contains('gf-merged'))?.parentElement ||
+    const list = shown(document).find(li => !li.classList.contains('gf-merged'))?.parentElement ||
       (fallback.isConnected ? fallback : (document.querySelector('[role=main]') || document.body).appendChild(fallback));
     list.prepend(...merged);
   }, 1000);
 
   // --- merge extra searches ---
-  async function fetchRows({ url, arrDay }) {
+  async function fetchRows({ url, arrDays }) {
     const f = el('iframe', { src: url });
     f.style.cssText = 'position:fixed;left:-9999px;width:1200px;height:900px';
     document.body.append(f);
     await new Promise(r => { f.onload = r; });
     const d = f.contentDocument;
-    await until(() => rows(d).length || /no (results|options)/i.test(d.body.innerText));
-    const more = [...d.querySelectorAll('button')].find(b => /more flights/i.test(b.innerText));
-    if (more) { more.click(); await sleep(2000); }
-    // offsetHeight skips Google's hidden duplicate list.
-    const found = rows(d).filter(li => li.offsetHeight && keep(li, arrDay)).map(li => document.importNode(li, true));
+    await until(() => shown(d).length || /no (results|options)/i.test(d.body.innerText));
+    const more = moreBtn(d), n = shown(d).length;
+    if (more) { more.click(); await until(() => shown(d).length > n, 10000); }
+    const found = shown(d).filter(li => keep(li, arrDays)).map(li => document.importNode(li, true));
     f.remove();
     return found;
   }
@@ -150,8 +217,8 @@
       c.onclick = () => { location.href = extra[i].url; };
       return c;
     }));
-    status.textContent = `+${merged.length} flight(s) from other pieces (blue edge)`;
+    status.textContent = `+${merged.length} flight(s) from other days (blue edge)`;
   }
 
-  if (st?.extra?.length && tfs() === st.tfs) merge(st);
+  if (active() && st.extra.length) merge(st);
 })();

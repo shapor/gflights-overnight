@@ -10,19 +10,21 @@ across midnight ("leave 11 PM – 2 AM") and across several ranges at once
 
 ## Use
 
-On a Google Flights results page, a small panel appears bottom-right:
+On a Google Flights results page, a "Times across midnight" card appears
+bottom-right with two sliders over real calendar time, with ticks at each
+midnight:
 
-    [Depart|Arrive] [23-2]  starting [search date|+1 day|…]  Apply  Clear
+- **Departure** spans the search date and the next day. Drag to e.g.
+  "Sat 11 PM – Sun 2 AM".
+- **Arrival** spans the departure day through +2. "Sun 11 PM – Mon 2 AM" means
+  exactly that. It does not also match 11 PM on other days, which Google's own
+  arrival filter does.
 
-- Ranges are whole hours, end exclusive, comma-separated. `23-2` wraps midnight.
-- **Depart**: the window starts on the search date (or +N days). `23-2` means
-  11 PM on the search date to 2 AM the next day.
-- **Arrive**: the window starts on the arrival day you pick, relative to the
-  departure date. "Arrive `1-3` starting +1 day" means 1–3 AM on the day after
-  departure. It does not also match 1–3 AM two days later.
-
-Rows from the extra searches are merged in with a blue left edge. Clicking one
-opens the search it came from, where it can be booked.
+The search updates about a second after you release a handle, so you can set
+both handles first. Flights from the extra searches are merged in with a blue
+left edge. Clicking one opens the search it came from, where it can be booked.
+"View more flights" is expanded automatically, both on the page and in the
+background searches.
 
 ## How it works, and why
 
@@ -36,8 +38,8 @@ server showed these limits:
 - Repeating the range fields is last-wins, so there is no native multi-range.
 - The arrival range is time-of-day only, so it matches +1 and +2 arrivals alike.
 
-So the extension splits the window into non-wrapping pieces, each pinned to an
-absolute day. A departure piece after midnight searches the next date. An
+So the extension splits each slider window into one piece per calendar day
+(departure pieces × arrival pieces). A departure piece after midnight searches the next date. An
 arrival piece keeps the date and filters rows by their `+N` arrival marker.
 The first piece becomes the page's own search. The others load in hidden
 same-origin iframes, and their rendered rows are cloned into the page.
@@ -50,6 +52,8 @@ but loses the single merged list, which was the point.
 ## Limitations
 
 - Only the first leg (the outbound on round trips) is filtered.
+- The panel needs a `tfs` search URL. A search opened from a `?q=` link only
+  gets one after you touch any filter or the date.
 - Scraping depends on Google's result markup (`ul > li` rows, times like
   `8:40 AM+2`). It will need touch-ups when Google changes the page.
 - Merged rows are snapshots. Sorting, filters and "View more flights" in the
