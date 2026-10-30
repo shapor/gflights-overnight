@@ -1,0 +1,9 @@
+{
+  "manifest_version": 3,
+  "name": "Google Flights Overnight Window",
+  "version": "0.1",
+  "description": "Filter Google Flights departures across midnight (e.g. 11 PM - 2 AM).",
+  "content_scripts": [
+    { "matches": ["https://www.google.com/travel/flights*"], "js": ["content.js"] }
+  ]
+}
